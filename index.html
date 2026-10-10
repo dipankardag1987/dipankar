@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Stock Management</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:Inter,Segoe UI,Arial,sans-serif;background:#f5f7fb;color:#172033}
+button,input,select{font:inherit}button{cursor:pointer}.hidden{display:none!important}
+.login{min-height:100vh;display:grid;place-items:center;padding:20px;background:linear-gradient(135deg,#eef3ff,#f8fafc)}
+.box{width:min(420px,100%);background:#fff;padding:30px;border-radius:18px;box-shadow:0 15px 45px #0001}.box h1{margin:0 0 6px}.muted{color:#6b7280;font-size:14px}
+input,select{width:100%;padding:11px 12px;border:1px solid #d9dee8;border-radius:10px;background:#fff;outline:none}input:focus,select:focus{border-color:#6375ff;box-shadow:0 0 0 3px #6375ff18}
+.btn{border:0;border-radius:9px;padding:10px 14px;background:#3548d8;color:#fff}.btn.secondary{background:#eef1ff;color:#2434a8}.btn.ok{background:#16834b}.btn.danger{background:#c0392b}.btn.small{padding:7px 10px;font-size:13px}
+.top{background:#fff;border-bottom:1px solid #e7eaf0;padding:14px 20px;display:flex;justify-content:space-between;align-items:center;gap:10px;position:sticky;top:0;z-index:5}
+.app{display:grid;grid-template-columns:210px 1fr;min-height:calc(100vh - 61px)}aside{background:#fff;border-right:1px solid #e7eaf0;padding:15px}aside button{display:block;width:100%;text-align:left;border:0;background:transparent;padding:11px;border-radius:9px;margin-bottom:4px}aside button:hover,aside button.active{background:#eef1ff;color:#2739c7}
+main{padding:22px;max-width:1300px;width:100%;margin:auto}h2{margin-top:0}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.card{background:#fff;border:1px solid #e7eaf0;border-radius:14px;padding:16px;margin-bottom:14px;box-shadow:0 2px 10px #00000006}.metric{font-size:28px;font-weight:700;margin-top:5px}.label{font-size:13px;color:#6b7280}.row{display:flex;gap:10px;align-items:center}.row>*{flex:1}.badge{display:inline-block;padding:6px 9px;border-radius:999px;background:#fff1d6;color:#8a5a00;font-size:13px;margin-left:8px}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:11px 9px;border-bottom:1px solid #edf0f4;font-size:14px}th{font-size:12px;color:#687386;text-transform:uppercase}.actions{display:flex;gap:6px;flex-wrap:wrap}.error{color:#c0392b;font-size:14px;min-height:20px}.success{color:#16834b;font-size:14px}.empty{padding:25px;text-align:center;color:#777}
+.toast{position:fixed;right:20px;bottom:20px;background:#172033;color:#fff;padding:14px 16px;border-radius:10px;box-shadow:0 10px 30px #0003;z-index:20}
+@media(max-width:850px){.app{grid-template-columns:1fr}aside{display:flex;overflow:auto;border-right:0;border-bottom:1px solid #e7eaf0;gap:5px}aside button{white-space:nowrap;width:auto}.grid{grid-template-columns:repeat(2,1fr)}main{padding:14px}.row{flex-direction:column;align-items:stretch}.top{padding:12px 14px}}
+@media(max-width:520px){.grid{grid-template-columns:1fr}.top .who{font-size:13px}}
+</style>
+</head>
+<body>
+<div id="loginView" class="login">
+  <div class="box">
+    <h1>Stock Management</h1>
+    <div class="muted" style="margin-bottom:20px">Secure inventory & order control</div>
+    <form id="loginForm">
+      <input id="email" type="email" placeholder="Email" required><br><br>
+      <input id="password" type="password" placeholder="Password" required><br><br>
+      <button class="btn" style="width:100%">Login</button>
+    </form>
+    <div id="loginError" class="error" style="margin-top:10px"></div>
+    <hr style="border:0;border-top:1px solid #eee;margin:20px 0">
+    <button class="btn secondary" style="width:100%" id="registerBtn">Create User Account</button>
+  </div>
+</div>
+
+<div id="appView" class="hidden">
+  <header class="top">
+    <b>Stock Management</b>
+    <div class="row" style="width:auto"><span id="who" class="who"></span><button class="btn danger small" id="logoutBtn">Logout</button></div>
+  </header>
+  <div class="app">
+    <aside id="nav"></aside>
+    <main id="main"></main>
+  </div>
+</div>
+<div id="toast" class="toast hidden"></div>
+
+<script>
+let token=localStorage.getItem('SM_TOKEN')||'';
+let me=JSON.parse(localStorage.getItem('SM_USER')||'null');
+let products=[];
+
+const $=id=>document.getElementById(id);
+function esc(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
+function toast(msg){$('toast').textContent=msg;$('toast').classList.remove('hidden');setTimeout(()=>$('toast').classList.add('hidden'),3000)}
+function money(n){return Number(n||0).toLocaleString('en-IN',{maximumFractionDigits:2})}
+
+async function api(path,options={}){
+  const headers={...(options.body instanceof FormData?{}:{'Content-Type':'application/json'}),...(options.headers||{})};
+  if(token)headers.Authorization='Bearer '+token;
+  const r=await fetch('/api'+path,{...options,headers});
+  let d={};try{d=await r.json()}catch{}
+  if(r.status===401){logout(false);throw new Error(d.error||'Session expired')}
+  if(!r.ok)throw new Error(d.error||'Request failed');
+  return d;
+}
+
+$('loginForm').addEventListener('submit',async e=>{
+  e.preventDefault();$('loginError').textContent='';
+  try{
+    const d=await api('/auth/login',{method:'POST',body:JSON.stringify({email:$('email').value.trim(),password:$('password').value})});
+    token=d.token;me=d.user;localStorage.setItem('SM_TOKEN',token);localStorage.setItem('SM_USER',JSON.stringify(me));boot();
+  }catch(err){$('loginError').textContent=err.message}
+});
+$('registerBtn').onclick=async()=>{
+  const name=prompt('Full name');if(!name)return;
+  const email=prompt('Email');if(!email)return;
+  const password=prompt('Password (minimum 6 characters)');if(!password)return;
+  try{
+    const d=await fetch('/api/auth/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,email,password})});
+    const x=await d.json();
+    if(!d.ok) throw new Error(x.error||'Registration failed');
+    alert(x.message||'Registration submitted');
+  }catch(e){alert(e.message||'Registration failed')}
+};
+function logout(reload=true){token='';me=null;localStorage.removeItem('SM_TOKEN');localStorage.removeItem('SM_USER');if(reload)location.reload();else showLogin()}
+$('logoutBtn').onclick=()=>logout();
+
+function showLogin(){$('loginView').classList.remove('hidden');$('appView').classList.add('hidden')}
+function boot(){
+  if(!token||!me){showLogin();return}
+  $('loginView').classList.add('hidden');$('appView').classList.remove('hidden');
+  $('who').textContent=`${me.name} • ${me.role}`;
+  const pages=me.role==='ADMIN'?['Dashboard','Orders','Products','Stock In','Users','Audit Log']:['Dashboard','Orders'];
+  $('nav').innerHTML=pages.map(p=>`<button data-page="${p}">${p}</button>`).join('');
+  document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>page(b.dataset.page));
+  if(me.role==='ADMIN')connectEvents();
+  page('Dashboard');
+}
+async function page(name){
+  document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('active',b.dataset.page===name));
+  try{
+    if(name==='Dashboard')await dashboard();
+    if(name==='Orders')await orders();
+    if(name==='Products')await productsPage();
+    if(name==='Stock In')await stockInPage();
+    if(name==='Users')await usersPage();
+    if(name==='Audit Log')await auditPage();
+  }catch(e){$('main').innerHTML=`<div class="card error">${esc(e.message)}</div>`}
+}
+
+async function dashboard(){
+  const [o,p]=await Promise.all([api('/orders'),api('/products')]);
+  const pending=o.filter(x=>x.status==='PENDING').length;
+  const issued=o.filter(x=>x.status==='ISSUED').length;
+  const stock=p.reduce((a,x)=>a+Number(x.current_stock||0),0);
+  $('main').innerHTML=`<h2>Dashboard ${pending?`<span class="badge">🔔 ${pending} New Order${pending>1?'s':''}</span>`:''}</h2>
+  <div class="grid">
+    <div class="card"><div class="label">Products</div><div class="metric">${p.length}</div></div>
+    <div class="card"><div class="label">Current Stock</div><div class="metric">${money(stock)}</div></div>
+    <div class="card"><div class="label">Orders</div><div class="metric">${o.length}</div></div>
+    <div class="card"><div class="label">Issued</div><div class="metric">${issued}</div></div>
+  </div>
+  <div class="card"><b>Stock formula</b><p class="muted">Opening Stock + Stock In − Issued = Current Stock</p></div>`;
+}
+
+async function productsPage(){
+  products=await api('/products');
+  $('main').innerHTML=`<h2>Products</h2>
+  <div class="card">
+    <div class="row"><input id="newProductName" placeholder="Product name"><input id="newSku" placeholder="SKU"><button class="btn" onclick="addProduct()">Add Product</button></div>
+  </div>
+  <div class="card">
+    <b>Bulk Excel Import</b><p class="muted">Columns: Product Name, SKU, optional Opening Stock. Existing SKUs are skipped.</p>
+    <div class="row"><input id="excelFile" type="file" accept=".xlsx,.xls,.csv"><button class="btn secondary" onclick="importExcel()">Import Excel</button></div>
+    <div id="excelResult" class="muted" style="margin-top:8px"></div>
+  </div>
+  <div class="card"><table><thead><tr><th>Product</th><th>SKU</th><th>Current Stock</th></tr></thead><tbody>
+  ${products.map(p=>`<tr><td>${esc(p.name)}</td><td>${esc(p.sku)}</td><td>${money(p.current_stock)}</td></tr>`).join('')||'<tr><td colspan="3" class="empty">No products</td></tr>'}
+  </tbody></table></div>`;
+}
+async function addProduct(){
+  try{await api('/products',{method:'POST',body:JSON.stringify({name:$('newProductName').value,sku:$('newSku').value})});toast('Product added');productsPage()}catch(e){alert(e.message)}
+}
+async function importExcel(){
+  const f=$('excelFile').files[0];if(!f)return alert('Select an Excel file first');
+  const fd=new FormData();fd.append('file',f);
+  try{const d=await api('/products/import',{method:'POST',body:fd});$('excelResult').textContent=`Imported: ${d.added}, skipped: ${d.skipped}${d.errors?.length?' | Errors: '+d.errors.join(' ; '):''}`;productsPage()}catch(e){$('excelResult').textContent=e.message}
+}
+
+async function orders(){
+  products=await api('/products');
+  if(me.role==='USER'){
+    const list=await api('/orders');
+    $('main').innerHTML=`<h2>Create Order Request</h2>
+    <div class="card">
+      <div class="muted" style="margin-bottom:10px">Requesting User</div>
+      <div style="font-weight:700;font-size:17px">${esc(me.name)}</div>
+      <div class="muted">${esc(me.email||'')}</div>
+      <div class="muted" style="margin-top:4px">Registered: ${me.created_at?new Date(me.created_at).toLocaleString('en-IN'):'-'}</div>
+      <hr style="border:0;border-top:1px solid #eee;margin:15px 0">
+      ${products.length?`<div class="row"><select id="productSelect">${products.map(p=>`<option value="${p.id}">${esc(p.name)} — stock ${money(p.current_stock)}</option>`).join('')}</select><input id="qty" type="number" min="1" step="1" placeholder="Quantity"><button class="btn ok" onclick="submitOrder()">Submit Order Request</button></div>`:'<div class="empty">No products available. Please contact admin.</div>'}
+    </div>
+    <div class="card"><div class="row"><h3 style="margin:0">My Orders</h3><button class="btn secondary small" onclick="orders()">Refresh</button></div>${orderTable(list)}</div>`;
+  }else{
+    $('main').innerHTML=`<h2>Orders</h2>
+    <div class="card">
+      <div class="row">
+        <div><label class="muted">From date</label><input id="orderFrom" type="date"></div>
+        <div><label class="muted">To date</label><input id="orderTo" type="date"></div>
+      </div>
+      <div class="actions" style="margin-top:10px">
+        <button class="btn" onclick="loadAdminOrders()">Filter</button>
+        <button class="btn secondary" onclick="exportData('orders','xlsx')">Export Excel</button>
+        <button class="btn secondary" onclick="exportData('orders','csv')">Export CSV</button>
+      </div>
+    </div>
+    <div id="adminOrdersBox" class="card">Loading...</div>`;
+    await loadAdminOrders();
+  }
+}
+async function loadAdminOrders(){
+  const from=$('orderFrom')?.value||'',to=$('orderTo')?.value||'';
+  if(from&&to&&from>to)return alert('From date cannot be after To date');
+  const list=await api(`/orders?${new URLSearchParams({from,to})}`);
+  $('adminOrdersBox').innerHTML=orderTable(list,true);
+}
+async function exportData(type,format){
+  const from=type==='orders'?($('orderFrom')?.value||''):($('auditFrom')?.value||'');
+  const to=type==='orders'?($('orderTo')?.value||''):($('auditTo')?.value||'');
+  if(from&&to&&from>to)return alert('From date cannot be after To date');
+  const q=new URLSearchParams({from,to,format});
+  try{
+    const r=await fetch(`/api/${type}/export?${q}`,{headers:{Authorization:'Bearer '+token}});
+    if(!r.ok){let d={};try{d=await r.json()}catch{};throw new Error(d.error||'Export failed')}
+    const blob=await r.blob();
+    const cd=r.headers.get('Content-Disposition')||'';
+    const m=cd.match(/filename="?([^"]+)"?/i);
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=m?m[1]:`${type}_export.${format==='csv'?'csv':'xlsx'}`;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+    toast('Export downloaded');
+  }catch(e){alert(e.message)}
+}
+
+function orderTable(list,admin=false){
+  if(!list.length)return '<div class="empty">No orders found</div>';
+  return `<table><thead><tr><th>ID</th><th>Requested By</th><th>Items</th><th>Status</th><th>Created</th>${admin?'<th>Action</th>':''}</tr></thead><tbody>${list.map(o=>`<tr>
+  <td>#${o.id}</td><td>${esc(o.created_by||o.customer_name||'-')}<br><span class="muted">${esc(o.requester_email||'')}</span>${o.registered_at?`<br><span class="muted">Registered: ${new Date(o.registered_at).toLocaleString('en-IN')}</span>`:''}</td><td>${(o.items||[]).map(i=>`${esc(i.product)} × ${money(i.quantity)}`).join('<br>')}</td><td>${esc(o.status)}</td><td>${new Date(o.created_at).toLocaleString('en-IN')}</td>
+  ${admin?`<td class="actions">${o.status==='PENDING'?`<button class="btn ok small" onclick="orderAction(${o.id},'approve')">Approve</button><button class="btn danger small" onclick="orderAction(${o.id},'reject')">Reject</button>`:''}${o.status==='APPROVED'?`<button class="btn small" onclick="orderAction(${o.id},'issue')">Issue</button>`:''}</td>`:''}
+  </tr>`).join('')}</tbody></table>`;
+}
+
+async function submitOrder(){
+  const productId=Number($('productSelect')?.value);
+  const quantity=Number($('qty')?.value);
+  const p=products.find(x=>Number(x.id)===productId);
+  if(!p)return alert('Please select a product');
+  if(!Number.isInteger(quantity)||quantity<=0)return alert('Enter a valid quantity');
+  if(quantity>Number(p.current_stock))return alert(`${p.name}: only ${p.current_stock} available`);
+  const btn=document.querySelector('#productSelect')?.parentElement?.querySelector('button');
+  if(btn)btn.disabled=true;
+  try{
+    const d=await api('/orders',{method:'POST',body:JSON.stringify({items:[{product_id:productId,quantity}]})});
+    toast(`Order request #${d.order_id} submitted successfully`);
+    await orders();
+  }catch(e){alert(e.message)}finally{if(btn)btn.disabled=false}
+}
+async function orderAction(id,action){try{await api(`/orders/${id}/${action}`,{method:'POST'});toast(`Order ${action} successful`);if(me.role==='ADMIN')loadAdminOrders();else orders()}catch(e){alert(e.message)}}
+
+async function stockInPage(){
+  products=await api('/products');
+  $('main').innerHTML=`<h2>Stock In</h2><div class="card"><div class="row"><select id="stockProduct">${products.map(p=>`<option value="${p.id}">${esc(p.name)} — current ${money(p.current_stock)}</option>`).join('')}</select><input id="stockQty" type="number" min="1" step="1" placeholder="Quantity"><button class="btn" onclick="saveStockIn()">Save Stock In</button></div></div>`;
+}
+async function saveStockIn(){try{await api('/stock-in',{method:'POST',body:JSON.stringify({product_id:Number($('stockProduct').value),quantity:Number($('stockQty').value)})});toast('Stock added');stockInPage()}catch(e){alert(e.message)}}
+
+async function usersPage(){
+  const users=await api('/users/pending');
+  $('main').innerHTML=`<h2>User Management</h2><div class="card"><table><thead><tr><th>Name</th><th>Email</th><th>Status</th><th>Registered</th><th>Action</th></tr></thead><tbody>${users.map(u=>`<tr><td>${esc(u.name)}</td><td>${esc(u.email)}</td><td>${esc(u.status)}</td><td>${new Date(u.created_at).toLocaleString()}</td><td class="actions">
+  ${u.status!=='APPROVED'?`<button class="btn ok small" onclick="userAction(${u.id},'approve')">Approve</button>`:''}
+  ${u.status==='PENDING'?`<button class="btn danger small" onclick="userAction(${u.id},'reject')">Reject</button>`:''}
+  ${u.status==='APPROVED'?`<button class="btn danger small" onclick="userAction(${u.id},'suspend')">Suspend</button>`:''}
+  ${u.status==='SUSPENDED'?`<button class="btn ok small" onclick="userAction(${u.id},'activate')">Activate</button>`:''}
+  </td></tr>`).join('')||'<tr><td colspan="5" class="empty">No pending/suspended users</td></tr>'}</tbody></table></div>`;
+}
+async function userAction(id,a){try{await api(`/users/${id}/${a}`,{method:'POST'});toast('User status updated');usersPage()}catch(e){alert(e.message)}}
+
+async function auditPage(){
+  $('main').innerHTML=`<h2>Audit Log</h2>
+  <div class="card">
+    <div class="row">
+      <div><label class="muted">From date</label><input id="auditFrom" type="date"></div>
+      <div><label class="muted">To date</label><input id="auditTo" type="date"></div>
+    </div>
+    <div class="actions" style="margin-top:10px">
+      <button class="btn" onclick="loadAudit()">Filter</button>
+      <button class="btn secondary" onclick="exportData('audit','xlsx')">Export Excel</button>
+      <button class="btn secondary" onclick="exportData('audit','csv')">Export CSV</button>
+    </div>
+  </div>
+  <div id="auditBox" class="card">Loading...</div>`;
+  await loadAudit();
+}
+async function loadAudit(){
+  const from=$('auditFrom')?.value||'',to=$('auditTo')?.value||'';
+  if(from&&to&&from>to)return alert('From date cannot be after To date');
+  const rows=await api(`/audit?${new URLSearchParams({from,to})}`);
+  $('auditBox').innerHTML=`<table><thead><tr><th>Date</th><th>User</th><th>Action</th><th>Entity</th><th>Details</th></tr></thead><tbody>${rows.map(x=>`<tr><td>${new Date(x.created_at).toLocaleString()}</td><td>${esc(x.user_name||x.email||'-')}</td><td>${esc(x.action)}</td><td>${esc(x.entity||'')} #${x.entity_id||''}</td><td>${esc(x.details||'')}</td></tr>`).join('')||'<tr><td colspan="5" class="empty">No audit records</td></tr>'}</tbody></table>`;
+}
+
+let eventSource=null;
+function connectEvents(){
+  if(eventSource)eventSource.close();
+  eventSource=new EventSource('/api/events?token='+encodeURIComponent(token));
+  eventSource.addEventListener('NEW_ORDER',e=>{const d=JSON.parse(e.data);toast(`🔔 New Order #${d.orderId} from ${d.customerName}`);if(document.querySelector('#nav button.active')?.dataset.page==='Dashboard')dashboard()});
+  eventSource.addEventListener('ORDER_UPDATED',()=>{if(document.querySelector('#nav button.active')?.dataset.page==='Orders')orders()});
+  eventSource.onerror=()=>{};
+}
+boot();
+</script>
+</body>
+</html>
